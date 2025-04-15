@@ -1,0 +1,123 @@
+cat << 'EOF' > /root/bot-gaianet/bot.py
+import cloudscraper
+import json
+import random
+import time
+import concurrent.futures
+
+# Read proxies from proxy.txt
+proxy_list = []
+try:
+    with open('proxy.txt', 'r') as file:
+        proxy_list = [line.strip() for line in file.readlines() if line.strip()]
+except FileNotFoundError:
+    print("Warning: proxy.txt not found. Continuing without proxies.")
+
+# Read API Key and URL from account.txt
+api_accounts = []
+with open('account.txt', 'r') as file:
+    for line in file:
+        parts = line.strip().split('|')
+        if len(parts) == 2:
+            api_accounts.append((parts[0], parts[1]))
+
+if not api_accounts:
+    print("Error: No valid API Key and URL found in account.txt!")
+    exit()
+
+# Read user messages from message.txt
+with open('message.txt', 'r') as file:
+    user_messages = [msg.strip() for msg in file.readlines() if msg.strip()]
+
+if not user_messages:
+    print("Error: No messages found in message.txt!")
+    exit()
+
+# Function to select a random proxy
+def get_random_proxy():
+    if proxy_list:
+        proxy = random.choice(proxy_list)
+        return {
+            'http': proxy,
+            'https': proxy
+        }
+    return None
+
+# Function to create a cloudscraper instance
+def create_scraper():
+    scraper = cloudscraper.create_scraper()
+    proxies = get_random_proxy()
+    if proxies:
+        print(f"Using proxy: {proxies['http']}")
+        scraper.proxies.update(proxies)
+    return scraper
+
+# Function to send request to API
+def send_request(message, scraper):
+    retry_count = 0
+    max_retries = 5
+    while retry_count < max_retries:
+        api_key, api_url = random.choice(api_accounts)
+        headers = {
+            'Authorization': f'Bearer {api_key}',
+            'Accept': 'application/json',
+            'Content-Type': 'application/json'
+        }
+        data = {
+            "messages": [
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": message}
+            ]
+        }
+        try:
+            response = scraper.post(api_url, headers=headers, json=data, timeout=30)
+            if response.status_code == 200:
+                try:
+                    response_json = response.json()
+                    print(f"✅ [SUCCESS] API: {api_url} | Message: '{message}'")
+                    print(response_json)
+                    return True
+                except json.JSONDecodeError:
+                    print(f"⚠️ [ERROR] Invalid JSON response! API: {api_url}")
+                    print(f"Response Text: {response.text}")
+            else:
+                print(f"⚠️ [ERROR] API: {api_url} | Status: {response.status_code} | Retrying...")
+                retry_count += 1
+                time.sleep(2 ** retry_count)
+        except Exception as e:
+            print(f"❌ [REQUEST FAILED] API: {api_url} | Error: {e} | Retrying...")
+            retry_count += 1
+            time.sleep(2 ** retry_count)
+    print(f"❌ Max retries reached for message: '{message}'")
+    return False
+
+# Thread manager
+def thread_manager(num_threads):
+    def worker(thread_id):
+        scraper = create_scraper()
+        while True:
+            try:
+                random_message = random.choice(user_messages)
+                send_request(random_message, scraper)
+            except Exception as e:
+                print(f"❌ Thread-{thread_id} crashed with error: {e}. Restarting...")
+                time.sleep(5)
+                continue
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
+        futures = [executor.submit(worker, i) for i in range(num_threads)]
+        concurrent.futures.wait(futures)
+
+# Start the script
+try:
+    num_threads = int(input("Enter the number of threads you want to use: "))
+    if num_threads < 1:
+        print("Please enter a number greater than 0.")
+        exit()
+except ValueError:
+    print("Invalid input. Please enter an integer.")
+    exit()
+
+print(f"Starting {num_threads} threads...")
+thread_manager(num_threads)
+EOF
